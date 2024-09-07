@@ -208,11 +208,12 @@ The API will return four error types when requests fail:
 - Description: Deletes the question with given id
 - Request Arguments:
   - `question_id` (integer, required): The ID of the question to delete.
-- Returns: Success value
+- Returns: Success value, id of deleted question
 - Sample: `/api/v1.0/questions/1` (DELETE request)
 ```json
 {
-  "success": true
+  "success": true,
+  "id": 1
 }
 ```
 

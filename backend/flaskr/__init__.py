@@ -4,10 +4,13 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from flask_cors import CORS, cross_origin
 import random
+from werkzeug.exceptions import HTTPException
 
 from models import setup_db, Question, Category, db
+from functools import wraps
 
 QUESTIONS_PER_PAGE = 10
+
 
 def categories_to_dict(categories):
     """Converts a category list to dict
@@ -23,6 +26,34 @@ def categories_to_dict(categories):
         categories_dict[c.id] = c.type
     return categories_dict
 
+
+def handle_exceptions(f):
+    """Try-except decorator
+
+    Args:
+        f (function): Endpoint function
+
+    Returns:
+        function: Decorated function
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except HTTPException as e:
+            # forward known http exception
+            raise e
+        except Exception as e:
+            # abort with 500 for unknown exception
+            print(e)
+            abort(500)
+        finally:
+            db.session.rollback()
+            db.session.close()
+
+    return decorated_function
+
+
 def create_app(test_config=None):
     """Create and configure app
 
@@ -31,7 +62,7 @@ def create_app(test_config=None):
 
     Returns:
         Flask: The flask app
-    """    
+    """
     app = Flask(__name__)
 
     with app.app_context():
@@ -46,24 +77,28 @@ def create_app(test_config=None):
 
     @app.after_request
     def after_request(response):
-        """The after_request decorator to set Access-Control-Allow"""        
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Headers', 'GET, POST, PATCH, DELETE, OPTIONS')
+        """The after_request decorator to set Access-Control-Allow"""
+        response.headers.add('Access-Control-Allow-Headers',
+                             'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Headers',
+                             'GET, POST, PATCH, DELETE, OPTIONS')
         return response
 
     @app.route('/api/v1.0/categories')
     @cross_origin()
+    @handle_exceptions
     def get_categories():
-        """Endpoint to handle GET requests for all available categories."""        
+        """Endpoint to handle GET requests for all available categories."""
         categories = Category.query.all()
         return jsonify({
             'success': True,
             'total_categories': len(categories),
             'categories': categories_to_dict(categories)
         })
-    
+
     @app.route('/api/v1.0/questions')
     @cross_origin()
+    @handle_exceptions
     def get_paginated_questions():
         """
         Endpoint to handle GET requests for questions,
@@ -77,22 +112,21 @@ def create_app(test_config=None):
         Clicking on the page numbers should update the questions.
         """
         page = request.args.get('page', 1, type=int)
-        start = (page - 1) * QUESTIONS_PER_PAGE
-        end = start + QUESTIONS_PER_PAGE
-        questions = Question.query.order_by(Question.id).all()
+        questions = Question.query.order_by(Question.id).paginate(
+            page=page, per_page=QUESTIONS_PER_PAGE, error_out=True).items
         categories = Category.query.order_by(Category.id).all()
         categories_dict = categories_to_dict(categories)
-        
+
         return jsonify({
             'success': True,
             'total_questions': len(questions),
-            'questions': [q.format() for q in questions[start:end]],
+            'questions': [q.format() for q in questions],
             'categories': categories_dict,
         })
 
-
     @app.route('/api/v1.0/questions/<int:question_id>', methods=['DELETE'])
     @cross_origin()
+    @handle_exceptions
     def delete_question(question_id):
         """
         Endpoint to DELETE question using a question ID.
@@ -106,11 +140,13 @@ def create_app(test_config=None):
 
         q.delete()
         return jsonify({
-            'success': True
+            'success': True,
+            'id': question_id
         })
 
     @app.route('/api/v1.0/questions', methods=['POST'])
     @cross_origin()
+    @handle_exceptions
     def create_question():
         """
         Endpoint to POST a new question,
@@ -122,26 +158,29 @@ def create_app(test_config=None):
         of the questions list in the "List" tab.
         """
         form = request.get_json()
-        try:
-            question = Question(
-                question=form['question'],
-                answer=form['answer'],
-                difficulty=form['difficulty'],
-                category=form['category'],
-            )
-            question.insert()
-            return jsonify({
-                'success': True
-            })
-        except Exception as e:
-            print(e)
-            db.session.rollback()
+
+        # check question and answer validity
+        if form['question'] == '' or form['answer'] == '' or form['question'] is None or form['answer'] is None:
             abort(422)
-        finally:
-            db.session.close()
+
+        # check category validity
+        if Category.query.get(form['category']) is None:
+            abort(422)
+
+        question = Question(
+            question=form['question'],
+            answer=form['answer'],
+            difficulty=form['difficulty'],
+            category=form['category'],
+        )
+        question.insert()
+        return jsonify({
+            'success': True
+        })
 
     @app.route('/api/v1.0/questions/search', methods=['POST'])
     @cross_origin()
+    @handle_exceptions
     def search_question():
         """
         POST endpoint to get questions based on a search term.
@@ -153,7 +192,8 @@ def create_app(test_config=None):
         Try using the word "title" to start.
         """
         search_term = request.args.get('search_term', '', type=str)
-        questions = Question.query.filter(Question.question.ilike(f'%{search_term}%')).all()
+        questions = Question.query.filter(
+            Question.question.ilike(f'%{search_term}%')).all()
         return jsonify({
             'success': True,
             'total_questions': len(questions),
@@ -162,6 +202,7 @@ def create_app(test_config=None):
 
     @app.route('/api/v1.0/categories/<int:category_id>/questions')
     @cross_origin()
+    @handle_exceptions
     def get_questions_by_category(category_id):
         """
         GET endpoint to get questions based on category.
@@ -174,16 +215,18 @@ def create_app(test_config=None):
         if category is None:
             abort(404)
 
-        questions = [q.format() for q in Question.query.filter(Question.category == category_id).all()] 
+        questions = [q.format() for q in Question.query.filter(
+            Question.category == category_id).all()]
         return jsonify({
             'success': True,
             'total_questions': len(questions),
             'questions': questions,
-            'current_category': category.type 
+            'current_category': category.type
         })
 
     @app.route('/api/v1.0/quizzes', methods=['POST'])
     @cross_origin()
+    @handle_exceptions
     def play_quiz():
         """
         POST endpoint to get questions to play the quiz.
@@ -198,9 +241,11 @@ def create_app(test_config=None):
         data = request.json
         category_id = data['quiz_category']['id']
         if int(category_id) > 0:
-            question = Question.query.filter(Question.category == category_id, Question.id.not_in(data['previous_questions'])).order_by(func.random()).limit(1).all()
+            question = Question.query.filter(Question.category == category_id, Question.id.not_in(
+                data['previous_questions'])).order_by(func.random()).limit(1).all()
         else:
-            question = Question.query.filter(Question.id.not_in(data['previous_questions'])).order_by(func.random()).limit(1).all()
+            question = Question.query.filter(Question.id.not_in(
+                data['previous_questions'])).order_by(func.random()).limit(1).all()
 
         question_res = None
         if len(question) > 0:
@@ -218,7 +263,7 @@ def create_app(test_config=None):
             'error': 404,
             'message': 'Resource Not Found'
         }), 404
-    
+
     @app.errorhandler(400)
     def bad_request(err):
         """Error handler for 400 bad request"""
@@ -227,7 +272,7 @@ def create_app(test_config=None):
             'error': 400,
             'message': 'Bad Request'
         }), 400
-    
+
     @app.errorhandler(422)
     def unprocessable(err):
         """Error handler for 422 unprocessable"""
@@ -236,7 +281,7 @@ def create_app(test_config=None):
             'error': 422,
             'message': 'Unprocessable'
         }), 422
-    
+
     @app.errorhandler(500)
     def internal_server_error(err):
         """Error handler for internal server error"""
@@ -247,4 +292,3 @@ def create_app(test_config=None):
         }), 500
 
     return app
-
