@@ -12,6 +12,10 @@
   width: 60%;
 }
 
+.categories-list li span{
+  cursor: pointer;
+}
+
 .questions-list {
   flex-basis: 75%;
   text-align: center;
@@ -71,5 +75,6 @@ img.category {
 }
 
 img.delete {
+  cursor: pointer;
   width: 20px;
 }
